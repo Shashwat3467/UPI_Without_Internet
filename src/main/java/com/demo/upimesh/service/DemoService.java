@@ -35,10 +35,13 @@ public class DemoService {
     static final String DEMO_PIN = "1234";
 
     private void seed(String vpa, String name, String balance) {
-        Account a = new Account(vpa, name, new BigDecimal(balance));
+        Account a = accounts.findById(vpa).orElseGet(() -> new Account(vpa, name, new BigDecimal(balance)));
         try {
             // Provision the (simulated) phone; only the PUBLIC key reaches the server.
-            a.setDevicePublicKey(deviceKeystore.register(vpa, DEMO_PIN));
+            String publicKey = deviceKeystore.register(vpa, DEMO_PIN);
+            if (a.getDevicePublicKey() != null && !a.getDevicePublicKey().equals(publicKey))
+                throw new IllegalStateException("Stored device key does not match account; restore the key volume");
+            a.setDevicePublicKey(publicKey);
         } catch (Exception e) {
             throw new IllegalStateException("Could not provision device for " + vpa, e);
         }
@@ -47,12 +50,12 @@ public class DemoService {
 
     @PostConstruct
     public void seedAccounts() {
-        if (accounts.count() == 0) {
-            seed("alice@demo", "Alice", "5000.00");
-            seed("bob@demo",   "Bob",   "1000.00");
-            seed("carol@demo", "Carol", "2500.00");
-            seed("dave@demo",  "Dave",  "500.00");
-            log.info("Seeded 4 demo accounts, each with a provisioned device key");
+        {
+            seed("rahul@demo", "Rahul", "5000.00");
+            seed("priya@demo",   "Priya",   "1000.00");
+            seed("neha@demo", "Neha", "2500.00");
+            seed("amit@demo",  "Amit",  "500.00");
+            log.info("Verified 4 demo accounts and their persistent device keys");
         }
     }
 
@@ -76,7 +79,7 @@ public class DemoService {
                 Instant.now().toEpochMilli()        // signedAt: for the freshness check
         );
         // "On the phone": the PIN unlocks the device key, which signs the instruction.
-        // A wrong PIN makes the device refuse (SecurityException). The PIN is never sent.
+        // A wrong PIN makes the device refuse (SecurityException). The PIN is not included in the signed/encrypted packet; the demo UI submits it to this simulated device service.
         instruction.setSignature(deviceKeystore.sign(senderVpa, pin, instruction.signingString()));
 
         String ciphertext = crypto.encrypt(instruction, serverKey.getPublicKey());

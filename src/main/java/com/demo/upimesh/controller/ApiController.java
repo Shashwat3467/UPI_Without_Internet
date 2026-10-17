@@ -16,7 +16,7 @@ import java.util.*;
  * The endpoints split into three groups:
  *   /api/server-key      → so simulated senders can fetch the server's public key
  *   /api/mesh/*          → simulator endpoints (inject, gossip, flush)
- *   /api/bridge/ingest   → THE real production endpoint a real bridge node would hit
+ *   /api/bridge/ingest   → bridge ingestion endpoint a real bridge node would hit
  *   /api/accounts, /api/transactions → for the dashboard
  */
 @RestController
@@ -50,6 +50,12 @@ public class ApiController {
      */
     @PostMapping("/demo/send")
     public ResponseEntity<?> demoSend(@RequestBody DemoSendRequest req) throws Exception {
+        if (req == null || req.senderVpa == null || req.receiverVpa == null || req.amount == null || req.pin == null)
+            return ResponseEntity.badRequest().body(Map.of("error", "sender, receiver, amount and PIN are required"));
+        if (req.ttl != null && (req.ttl < 1 || req.ttl > 32))
+            return ResponseEntity.badRequest().body(Map.of("error", "TTL must be between 1 and 32"));
+        if (req.startDevice != null && mesh.getDevice(req.startDevice) == null)
+            return ResponseEntity.badRequest().body(Map.of("error", "Unknown start device"));
         MeshPacket packet;
         try {
             packet = demo.createPacket(
@@ -60,10 +66,11 @@ public class ApiController {
             return ResponseEntity.badRequest().body(Map.of("error", String.valueOf(e.getMessage())));
         }
 
-        String startDevice = req.startDevice == null ? "phone-alice" : req.startDevice;
+        String startDevice = req.startDevice == null ? "phone-rahul" : req.startDevice;
         mesh.inject(startDevice, packet);
 
         return ResponseEntity.ok(Map.of(
+                "packet", packet,
                 "packetId", packet.getPacketId(),
                 "ciphertextPreview", packet.getCiphertext().substring(0, 64) + "...",
                 "ttl", packet.getTtl(),
@@ -110,20 +117,13 @@ public class ApiController {
         );
     }
 
-    /**
-     * "All bridge nodes simultaneously walk outside and get 4G."
-     * They all upload everything they hold to /api/bridge/ingest.
-     *
-     * THIS is the moment the duplicate-storm idempotency case is tested:
-     * if multiple bridge nodes hold the same packet, the server gets multiple
-     * concurrent POSTs of the same ciphertext, and only one should settle.
-     */
+    /** Process queued bridge uploads concurrently. */
     @PostMapping("/mesh/flush")
     public Map<String, Object> meshFlush() {
         List<MeshSimulatorService.BridgeUpload> uploads = mesh.collectBridgeUploads();
 
         List<Map<String, Object>> results = new ArrayList<>();
-        // Upload them in parallel to actually exercise concurrent idempotency.
+        // Process uploads concurrently; ingestion handles duplicate deliveries.
         uploads.parallelStream().forEach(up -> {
             BridgeIngestionService.IngestResult r =
                     bridge.ingest(up.packet(), up.bridgeNodeId(), 5 - up.packet().getTtl());
@@ -147,14 +147,13 @@ public class ApiController {
     @PostMapping("/mesh/reset")
     public Map<String, Object> meshReset() {
         mesh.resetMesh();
-        idempotency.clear();
-        return Map.of("status", "mesh and idempotency cache cleared");
+        return Map.of("status", "mesh cleared");
     }
 
     // -------------------------------------------------------------- bridge
 
     /**
-     * THE PRODUCTION ENDPOINT.
+     * Bridge ingestion endpoint.
      * In a real deployment, the Android app's bridge logic POSTs here whenever
      * the device has internet and is holding mesh packets.
      */

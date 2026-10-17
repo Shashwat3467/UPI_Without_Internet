@@ -29,14 +29,14 @@ public class SimulatedDeviceKeystore {
 
     private record Device(KeyPair keyPair, byte[] salt, byte[] pinDigest) {}
 
+    @org.springframework.beans.factory.annotation.Autowired private com.demo.upimesh.crypto.PersistentKeyStore store;
+
     private final Map<String, Device> devices = new ConcurrentHashMap<>();
     private final SecureRandom rng = new SecureRandom();
 
     /** "Provision" a device for a VPA. Returns the Base64 X.509 public key to register on the account. */
-    public String register(String vpa, String pin) throws GeneralSecurityException {
-        KeyPairGenerator gen = KeyPairGenerator.getInstance("EC");
-        gen.initialize(new ECGenParameterSpec("secp256r1"));
-        KeyPair kp = gen.generateKeyPair();
+    public String register(String vpa, String pin) throws Exception {
+        KeyPair kp = store.loadOrCreate("device-" + com.demo.upimesh.crypto.PacketCodec.sha256Hex(vpa.getBytes(StandardCharsets.UTF_8)), "EC");
         byte[] salt = new byte[16];
         rng.nextBytes(salt);
         devices.put(vpa, new Device(kp, salt, digest(salt, pin)));

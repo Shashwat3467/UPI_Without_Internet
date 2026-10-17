@@ -6,3 +6,8 @@ target/
 *.iml
 .vscode/
 .DS_Store
+
+data/
+.env
+load-results*.json
+__pycache__/

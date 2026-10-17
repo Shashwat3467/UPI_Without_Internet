@@ -29,8 +29,7 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Regression tests for the issues found in the code review. Each test is named
- * after the attack or failure it prevents.
+ * Regression tests for packet validation, sender authentication, and retries.
  */
 @SpringBootTest
 class HardeningTest {
@@ -61,7 +60,7 @@ class HardeningTest {
     }
 
     // ------------------------------------------------------------------
-    // Fix 1: Base64 malleability must not allow a second settlement
+    // Canonical encoding and replay protection
     // ------------------------------------------------------------------
 
     @Test
@@ -69,12 +68,12 @@ class HardeningTest {
         // Need a ciphertext whose length is not a multiple of 3 so it ends in '='.
         MeshPacket packet = null;
         for (int i = 0; i < 100; i++) {
-            MeshPacket candidate = demo.createPacket("alice@demo", "bob@demo", new BigDecimal("10.00"), "1234", 5);
+            MeshPacket candidate = demo.createPacket("rahul@demo", "priya@demo", new BigDecimal("10.00"), "1234", 5);
             if (candidate.getCiphertext().endsWith("=")) { packet = candidate; break; }
         }
         assertNotNull(packet, "could not produce a padded ciphertext");
 
-        BigDecimal aliceBefore = balance("alice@demo");
+        BigDecimal rahulBefore = balance("rahul@demo");
 
         assertEquals("SETTLED", bridge.ingest(packet, "bridge-1", 1).outcome());
 
@@ -93,13 +92,13 @@ class HardeningTest {
         IngestResult r2 = bridge.ingest(wrap(bitVariant), "bridge-evil", 1);
         assertNotEquals("SETTLED", r2.outcome(), "trailing-bit variant must not settle again");
 
-        assertEquals(aliceBefore.subtract(new BigDecimal("10.00")), balance("alice@demo"),
+        assertEquals(rahulBefore.subtract(new BigDecimal("10.00")), balance("rahul@demo"),
                 "sender must be debited exactly once");
     }
 
     @Test
     void hashIsOverDecodedBytesNotTheString() throws Exception {
-        MeshPacket p = demo.createPacket("alice@demo", "bob@demo", new BigDecimal("1.00"), "1234", 5);
+        MeshPacket p = demo.createPacket("rahul@demo", "priya@demo", new BigDecimal("1.00"), "1234", 5);
         assertEquals(crypto.hashCiphertext(p.getCiphertext()), crypto.hashCiphertext(p.getCiphertext()));
         // A non-canonical spelling is refused outright rather than hashed to a different key.
         if (p.getCiphertext().endsWith("=")) {
@@ -112,19 +111,19 @@ class HardeningTest {
     void reEncryptedCopyOfSamePaymentIsStoppedByNonceConstraint() throws Exception {
         // Second line of defence: even a completely different ciphertext carrying the
         // SAME signed instruction (same nonce) must not settle twice.
-        MeshPacket original = demo.createPacket("alice@demo", "bob@demo", new BigDecimal("20.00"), "1234", 5);
+        MeshPacket original = demo.createPacket("rahul@demo", "priya@demo", new BigDecimal("20.00"), "1234", 5);
         PaymentInstruction inner = crypto.decrypt(original.getCiphertext());
         MeshPacket reWrapped = wrap(crypto.encrypt(inner, serverKey.getPublicKey()));
         assertNotEquals(original.getCiphertext(), reWrapped.getCiphertext());
 
-        BigDecimal aliceBefore = balance("alice@demo");
+        BigDecimal rahulBefore = balance("rahul@demo");
         assertEquals("SETTLED", bridge.ingest(original, "b1", 1).outcome());
         assertEquals("DUPLICATE_DROPPED", bridge.ingest(reWrapped, "b2", 1).outcome());
-        assertEquals(aliceBefore.subtract(new BigDecimal("20.00")), balance("alice@demo"));
+        assertEquals(rahulBefore.subtract(new BigDecimal("20.00")), balance("rahul@demo"));
     }
 
     // ------------------------------------------------------------------
-    // Fix 2: sender authentication
+    // Sender authentication
     // ------------------------------------------------------------------
 
     private String signWithAttackerKey(PaymentInstruction ins) throws Exception {
@@ -138,7 +137,7 @@ class HardeningTest {
     }
 
     private PaymentInstruction instruction(String amount) {
-        return new PaymentInstruction("alice@demo", "bob@demo", new BigDecimal(amount),
+        return new PaymentInstruction("rahul@demo", "priya@demo", new BigDecimal(amount),
                 UUID.randomUUID().toString(), System.currentTimeMillis());
     }
 
@@ -148,11 +147,11 @@ class HardeningTest {
         forged.setSignature(signWithAttackerKey(forged));
         MeshPacket packet = wrap(crypto.encrypt(forged, serverKey.getPublicKey())); // anyone can encrypt
 
-        BigDecimal aliceBefore = balance("alice@demo");
+        BigDecimal rahulBefore = balance("rahul@demo");
         IngestResult r = bridge.ingest(packet, "attacker", 1);
         assertEquals("INVALID", r.outcome());
         assertEquals("bad_signature", r.reason());
-        assertEquals(aliceBefore, balance("alice@demo"));
+        assertEquals(rahulBefore, balance("rahul@demo"));
     }
 
     @Test
@@ -165,7 +164,7 @@ class HardeningTest {
 
     @Test
     void alteringAmountAfterSigningInvalidatesSignature() throws Exception {
-        MeshPacket original = demo.createPacket("alice@demo", "bob@demo", new BigDecimal("10.00"), "1234", 5);
+        MeshPacket original = demo.createPacket("rahul@demo", "priya@demo", new BigDecimal("10.00"), "1234", 5);
         PaymentInstruction inner = crypto.decrypt(original.getCiphertext());
         inner.setAmount(new BigDecimal("4000.00")); // attacker who somehow holds plaintext changes the amount
 
@@ -177,22 +176,22 @@ class HardeningTest {
     @Test
     void wrongPinMeansTheDeviceWillNotSign() {
         assertThrows(SecurityException.class,
-                () -> demo.createPacket("alice@demo", "bob@demo", new BigDecimal("10.00"), "0000", 5));
+                () -> demo.createPacket("rahul@demo", "priya@demo", new BigDecimal("10.00"), "0000", 5));
     }
 
     // ------------------------------------------------------------------
-    // Fix 3: legitimate concurrent payments from the same sender must not be lost
+    // Concurrent settlement and retries
     // ------------------------------------------------------------------
 
     @Test
     void concurrentDistinctPaymentsFromSameSenderAllSettle() throws Exception {
         int n = 8;
-        BigDecimal aliceBefore = balance("alice@demo");
-        BigDecimal bobBefore = balance("bob@demo");
+        BigDecimal rahulBefore = balance("rahul@demo");
+        BigDecimal priyaBefore = balance("priya@demo");
 
         List<MeshPacket> packets = new ArrayList<>();
         for (int i = 0; i < n; i++) {
-            packets.add(demo.createPacket("alice@demo", "bob@demo", new BigDecimal("10.00"), "1234", 5));
+            packets.add(demo.createPacket("rahul@demo", "priya@demo", new BigDecimal("10.00"), "1234", 5));
         }
 
         ExecutorService pool = Executors.newFixedThreadPool(n);
@@ -216,8 +215,8 @@ class HardeningTest {
         pool.shutdown();
 
         BigDecimal total = new BigDecimal("10.00").multiply(BigDecimal.valueOf(n));
-        assertEquals(aliceBefore.subtract(total), balance("alice@demo"));
-        assertEquals(bobBefore.add(total), balance("bob@demo"));
+        assertEquals(rahulBefore.subtract(total), balance("rahul@demo"));
+        assertEquals(priyaBefore.add(total), balance("priya@demo"));
     }
 
     @Test
@@ -230,7 +229,7 @@ class HardeningTest {
     }
 
     // ------------------------------------------------------------------
-    // Fix 4: cheap input limits
+    // Input validation
     // ------------------------------------------------------------------
 
     @Test
@@ -242,10 +241,10 @@ class HardeningTest {
 
     @Test
     void amountAboveLimitAndSelfPaymentAreRejected() throws Exception {
-        MeshPacket big = demo.createPacket("alice@demo", "bob@demo", new BigDecimal("10000.01"), "1234", 5);
+        MeshPacket big = demo.createPacket("rahul@demo", "priya@demo", new BigDecimal("10000.01"), "1234", 5);
         assertEquals("amount_exceeds_limit", bridge.ingest(big, "b", 1).reason());
 
-        MeshPacket self = demo.createPacket("alice@demo", "alice@demo", new BigDecimal("1.00"), "1234", 5);
+        MeshPacket self = demo.createPacket("rahul@demo", "rahul@demo", new BigDecimal("1.00"), "1234", 5);
         assertEquals("self_payment", bridge.ingest(self, "b", 1).reason());
     }
 }

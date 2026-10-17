@@ -19,10 +19,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/**
- * The headline test: the "three bridges deliver the same packet at the same
- * instant" scenario. More attack-oriented tests live in HardeningTest.
- */
+/** Concurrent duplicate delivery and encrypted packet handling. */
 @SpringBootTest
 class IdempotencyConcurrencyTest {
 
@@ -41,12 +38,12 @@ class IdempotencyConcurrencyTest {
     @Test
     void singlePacketDeliveredByThreeBridgesSettlesExactlyOnce() throws Exception {
         // Capture starting balances
-        BigDecimal aliceBefore = accounts.findById("alice@demo").orElseThrow().getBalance();
-        BigDecimal bobBefore = accounts.findById("bob@demo").orElseThrow().getBalance();
+        BigDecimal rahulBefore = accounts.findById("rahul@demo").orElseThrow().getBalance();
+        BigDecimal priyaBefore = accounts.findById("priya@demo").orElseThrow().getBalance();
 
         // One packet, but we'll deliver it from 3 "bridges" simultaneously
         MeshPacket packet = demoService.createPacket(
-                "alice@demo", "bob@demo", new BigDecimal("100.00"), "1234", 5);
+                "rahul@demo", "priya@demo", new BigDecimal("100.00"), "1234", 5);
 
         ExecutorService pool = Executors.newFixedThreadPool(3);
         CountDownLatch start = new CountDownLatch(1);
@@ -60,6 +57,10 @@ class IdempotencyConcurrencyTest {
                 try {
                     start.await();
                     BridgeIngestionService.IngestResult r = bridge.ingest(packet, node, 3);
+                    for (int retry = 0; "RETRY_LATER".equals(r.outcome()) && retry < 100; retry++) {
+                        Thread.sleep(10);
+                        r = bridge.ingest(packet, node, 3);
+                    }
                     if ("SETTLED".equals(r.outcome())) settled.incrementAndGet();
                     else if ("DUPLICATE_DROPPED".equals(r.outcome())) duplicates.incrementAndGet();
                 } catch (Exception e) { throw new RuntimeException(e); }
@@ -74,16 +75,16 @@ class IdempotencyConcurrencyTest {
         assertEquals(2, duplicates.get(), "the other two should be duplicates");
 
         // Balance moved exactly once
-        BigDecimal aliceAfter = accounts.findById("alice@demo").orElseThrow().getBalance();
-        BigDecimal bobAfter = accounts.findById("bob@demo").orElseThrow().getBalance();
-        assertEquals(aliceBefore.subtract(new BigDecimal("100.00")), aliceAfter);
-        assertEquals(bobBefore.add(new BigDecimal("100.00")), bobAfter);
+        BigDecimal rahulAfter = accounts.findById("rahul@demo").orElseThrow().getBalance();
+        BigDecimal priyaAfter = accounts.findById("priya@demo").orElseThrow().getBalance();
+        assertEquals(rahulBefore.subtract(new BigDecimal("100.00")), rahulAfter);
+        assertEquals(priyaBefore.add(new BigDecimal("100.00")), priyaAfter);
     }
 
     @Test
     void tamperedCiphertextIsRejected() throws Exception {
         MeshPacket packet = demoService.createPacket(
-                "alice@demo", "bob@demo", new BigDecimal("50.00"), "1234", 5);
+                "rahul@demo", "priya@demo", new BigDecimal("50.00"), "1234", 5);
 
         // Flip a byte in the middle of the ciphertext
         char[] chars = packet.getCiphertext().toCharArray();
@@ -97,7 +98,7 @@ class IdempotencyConcurrencyTest {
     @Test
     void encryptDecryptRoundTrip() throws Exception {
         PaymentInstruction original = new PaymentInstruction(
-                "alice@demo", "bob@demo", new BigDecimal("123.45"),
+                "rahul@demo", "priya@demo", new BigDecimal("123.45"),
                 "nonce-0001", System.currentTimeMillis());
         original.setSignature("sig-placeholder");
 

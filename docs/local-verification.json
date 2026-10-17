@@ -1,0 +1,17 @@
+{
+  "payments": 100,
+  "deliveries": 300,
+  "workers": 8,
+  "seconds": 3.532,
+  "deliveries_per_second": 84.94,
+  "latency_p50_ms": 55.53,
+  "latency_p95_ms": 262.42,
+  "outcomes": {
+    "SETTLED": 100,
+    "DUPLICATE_DROPPED": 200
+  },
+  "balance_checks_passed": true,
+  "note": "Local demo measurement; packet creation excluded, retries included.",
+  "restart_checks_passed": true,
+  "database": "H2 file"
+}

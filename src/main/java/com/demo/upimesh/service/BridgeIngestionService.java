@@ -34,7 +34,7 @@ import java.util.regex.Pattern;
  *   5. Freshness check (replay window).
  *   6. Verify the sender DEVICE's signature (authenticity).
  *   7. Settle in a DB transaction. Transient contention is retried; if it still
- *      fails, the claim is RELEASED so the bridge can retry (outcome RETRY_LATER).
+ *      fails, the bridge can retry (outcome RETRY_LATER). Claims release in finally.
  *
  * Defence in depth against double settlement: in-memory claim, then DB unique
  * constraints on packetHash and on (senderVpa, nonce).
@@ -67,6 +67,9 @@ public class BridgeIngestionService {
     private int maxRetries;
 
     public IngestResult ingest(MeshPacket packet, String bridgeNodeId, int hopCount) {
+        if (packet == null) return IngestResult.invalid("?", "missing_packet");
+        if (bridgeNodeId == null || !bridgeNodeId.matches("[A-Za-z0-9._-]{1,64}"))
+            return IngestResult.invalid("?", "bad_bridge_id");
         int hops = Math.max(0, Math.min(hopCount, MAX_HOPS));
         String packetHash = "?";
         boolean claimed = false;
@@ -83,9 +86,10 @@ public class BridgeIngestionService {
             String shortHash = packetHash.substring(0, 12) + "...";
 
             // ---- 2. Idempotency gate ----
+            if (transactions.existsByPacketHash(packetHash)) return IngestResult.duplicate(packetHash);
             if (!idempotency.claim(packetHash)) {
-                log.info("DUPLICATE packet {} from bridge {} - dropped", shortHash, bridgeNodeId);
-                return IngestResult.duplicate(packetHash);
+                log.info("IN-FLIGHT packet {} from bridge {} - retry required", shortHash, bridgeNodeId);
+                return IngestResult.retryLater(packetHash, "processing");
             }
             claimed = true;
 
@@ -106,14 +110,12 @@ public class BridgeIngestionService {
             }
 
             // ---- 5. Freshness (replay window) ----
-            long ageSeconds = (Instant.now().toEpochMilli() - instruction.getSignedAt()) / 1000;
-            if (ageSeconds > maxAgeSeconds) {
-                log.warn("Packet {} too old ({}s), rejected", shortHash, ageSeconds);
+            Instant now = Instant.now();
+            Instant signedAt = Instant.ofEpochMilli(instruction.getSignedAt());
+            if (signedAt.isBefore(now.minusSeconds(maxAgeSeconds)))
                 return IngestResult.invalid(packetHash, "stale_packet");
-            }
-            if (ageSeconds < -300) { // small clock-skew tolerance
+            if (signedAt.isAfter(now.plusSeconds(300)))
                 return IngestResult.invalid(packetHash, "future_dated");
-            }
 
             // ---- 6. Sender authenticity: device signature ----
             Account sender = accounts.findById(instruction.getSenderVpa()).orElse(null);
@@ -134,8 +136,9 @@ public class BridgeIngestionService {
             // Unknown failure: we can't be sure what state we are in. Give the claim back so the
             // payment isn't lost; the DB unique constraints still make double-settlement impossible.
             log.error("Ingestion error: {}", e.getMessage(), e);
-            if (claimed) idempotency.release(packetHash);
             return IngestResult.retryLater(packetHash, "internal_error");
+        } finally {
+            if (claimed) idempotency.release(packetHash);
         }
     }
 
@@ -147,7 +150,7 @@ public class BridgeIngestionService {
                 return IngestResult.settled(packetHash, tx);
 
             } catch (InvalidInstructionException e) {
-                return IngestResult.invalid(packetHash, e.getMessage()); // permanent; claim stays
+                return IngestResult.invalid(packetHash, e.getMessage()); // permanent invalid instruction
 
             } catch (DataIntegrityViolationException e) {
                 // Either the same bytes or the same (sender, nonce) already settled. Confirm it's
@@ -164,14 +167,12 @@ public class BridgeIngestionService {
                 // Includes optimistic-lock conflicts: two legit payments touching the same account.
                 if (attempt >= maxRetries) {
                     log.warn("Settlement still failing after {} retries; releasing claim", attempt);
-                    idempotency.release(packetHash);
                     return IngestResult.retryLater(packetHash, "contention");
                 }
                 try {
                     Thread.sleep(ThreadLocalRandom.current().nextLong(5, 25) * (attempt + 1));
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
-                    idempotency.release(packetHash);
                     return IngestResult.retryLater(packetHash, "interrupted");
                 }
             }
@@ -203,7 +204,9 @@ public class BridgeIngestionService {
 
     public record IngestResult(String outcome, String packetHash, String reason, Long transactionId) {
         public static IngestResult settled(String hash, Transaction tx) {
-            return new IngestResult("SETTLED", hash, null, tx.getId());
+            return tx.getStatus() == Transaction.Status.REJECTED
+                    ? new IngestResult("REJECTED", hash, "insufficient_funds", tx.getId())
+                    : new IngestResult("SETTLED", hash, null, tx.getId());
         }
         public static IngestResult duplicate(String hash) {
             return new IngestResult("DUPLICATE_DROPPED", hash, null, null);

@@ -15,9 +15,9 @@ import java.util.Base64;
  * Holds the server's RSA keypair.
  *
  * In production, the private key would live in an HSM (Hardware Security Module)
- * or at least a KMS like AWS KMS / HashiCorp Vault. NEVER in the JAR or source.
+ * or a managed key service. Private keys must not be committed to source control.
  *
- * For this demo we generate a fresh keypair on every startup. The public key is
+ * For this demo we persist the keypair in the configured key directory. The public key is
  * exposed via /api/server-key so the (simulated) sender devices can use it to
  * encrypt payloads.
  */
@@ -26,14 +26,13 @@ public class ServerKeyHolder {
 
     private static final Logger log = LoggerFactory.getLogger(ServerKeyHolder.class);
 
+    @org.springframework.beans.factory.annotation.Autowired private PersistentKeyStore store;
     private KeyPair keyPair;
 
     @PostConstruct
     public void init() throws Exception {
-        KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
-        gen.initialize(2048);
-        this.keyPair = gen.generateKeyPair();
-        log.info("Server RSA keypair generated (2048-bit). Public key fingerprint: {}",
+        this.keyPair = store.loadOrCreate("server", "RSA");
+        log.info("Server RSA keypair loaded (2048-bit). Public key fingerprint: {}",
                 getPublicKeyBase64().substring(0, 32) + "...");
     }
 

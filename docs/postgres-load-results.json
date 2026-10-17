@@ -1,0 +1,15 @@
+{
+  "payments": 100,
+  "deliveries": 300,
+  "workers": 8,
+  "seconds": 6.442,
+  "deliveries_per_second": 46.57,
+  "latency_p50_ms": 103.69,
+  "latency_p95_ms": 607.38,
+  "outcomes": {
+    "DUPLICATE_DROPPED": 200,
+    "SETTLED": 100
+  },
+  "balance_checks_passed": true,
+  "note": "Local demo measurement; packet creation excluded, retries included."
+}

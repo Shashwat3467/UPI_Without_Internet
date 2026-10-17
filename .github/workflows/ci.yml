@@ -1,0 +1,35 @@
+name: Build and verify
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: upimesh
+          POSTGRES_USER: upimesh
+          POSTGRES_PASSWORD: ci-password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U upimesh -d upimesh"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - run: mvn -B verify
+      - run: mvn -B test -Dspring.profiles.active=postgres
+        env:
+          DATABASE_URL: jdbc:postgresql://localhost:5432/upimesh
+          DATABASE_USER: upimesh
+          DATABASE_PASSWORD: ci-password
+      - run: docker build -t offline-payment-relay .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-reports
+          path: target/surefire-reports
